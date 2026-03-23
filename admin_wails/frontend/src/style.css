@@ -1,0 +1,90 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: #e9f0ff;
+  font-family: "Inter", "Segoe UI", Arial, sans-serif;
+  background: radial-gradient(1000px 480px at 90% -10%, rgba(122, 88, 255, 0.28), transparent 55%),
+    radial-gradient(900px 520px at -10% 0%, rgba(63, 116, 255, 0.28), transparent 55%),
+    linear-gradient(155deg, #050812 0%, #09142a 42%, #04070f 100%);
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 10px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(13, 24, 48, 0.9);
+  border: 1px solid rgba(117, 150, 230, 0.24);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.sub {
+  font-size: 12px;
+  color: #9fb3db;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid rgba(117, 150, 230, 0.3);
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2f6bff 0%, #7a58ff 100%);
+  color: white;
+  padding: 8px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.content {
+  position: relative;
+  flex: 1;
+  background: rgba(13, 24, 48, 0.75);
+  border: 1px solid rgba(117, 150, 230, 0.24);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #d8e5ff;
+  background: rgba(8, 14, 26, 0.86);
+  z-index: 2;
+}
+
+.panel {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}

@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin Portal - Bang Dieu Khien License</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260323g" />
+</head>
+<body>
+  <div class="bg-noise"></div>
+
+  <main class="auth-wrap" id="loginBox">
+    <section class="auth-card glass">
+      <div class="auth-left">
+        <div class="chip">TRUY CẬP BẢO MẬT</div>
+        <h1>Admin Portal</h1>
+        <p>Trung tâm quản trị key bản quyền phong cách cyberpunk, hiện đại, gọn đẹp.</p>
+        <ul>
+          <li>Quản lý key 7/30 ngày: tạo, sửa, gia hạn, xóa</li>
+          <li>Theo dõi HWID/IP và đánh dấu hành vi đáng nghi</li>
+          <li>Ban IP/HWID có hạn, nhật ký chi tiết, cài đặt linh hoạt</li>
+        </ul>
+      </div>
+      <div class="auth-right">
+        <h2>Đăng nhập quản trị</h2>
+        <label for="username">Tài khoản</label>
+        <input id="username" value="admin" />
+        <label for="password">Mật khẩu</label>
+        <input id="password" type="password" placeholder="Nhập mật khẩu..." />
+        <button id="btnLogin" class="btn primary">Đăng nhập</button>
+        <div id="loginStatus" class="status"></div>
+      </div>
+    </section>
+  </main>
+
+  <section id="appBox" class="app-shell hidden">
+    <aside class="sidebar glass" id="sidebar">
+      <div class="brand">
+        <div class="brand-icon">AP</div>
+        <div>
+          <strong>Admin Portal</strong>
+          <small>Quản lý bản quyền</small>
+        </div>
+      </div>
+      <nav class="side-nav">
+        <button class="nav-btn active" data-tab="tabDashboard">Tổng quan</button>
+        <button class="nav-btn" data-tab="tabKeys">Quản lý key</button>
+        <button class="nav-btn" data-tab="tabDevices">Người dùng / Thiết bị</button>
+        <button class="nav-btn" data-tab="tabBans">Hệ thống ban</button>
+        <button class="nav-btn" data-tab="tabLogs">Nhật ký</button>
+        <button class="nav-btn" data-tab="tabSettings">Cài đặt</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="status-chip"><span class="dot on"></span> Server đang online</div>
+      </div>
+    </aside>
+
+    <div class="main-pane">
+      <header class="topbar glass">
+        <div class="top-left">
+          <button id="btnToggleSidebar" class="btn ghost">☰</button>
+          <div>
+            <h2>Admin Portal</h2>
+            <p>Bảng điều khiển cyberpunk cho quản lý bản quyền</p>
+          </div>
+        </div>
+        <div class="top-right">
+          <div id="systemStatus" class="status-chip"><span class="dot on"></span> Đang online</div>
+          <div id="lastRefreshTag" class="status-chip">Last refresh: -</div>
+          <div class="avatar">AD</div>
+        </div>
+      </header>
+
+      <section class="tab-panel active" id="tabDashboard">
+        <div class="stats-grid" id="dash"></div>
+        <div class="grid-2">
+          <article class="glass card">
+            <h3>Lượng sử dụng key theo thời gian</h3>
+            <canvas id="usageChart" height="170"></canvas>
+          </article>
+          <article class="glass card">
+            <h3>Người dùng hoạt động</h3>
+            <canvas id="usersChart" height="170"></canvas>
+          </article>
+        </div>
+        <article class="glass card">
+          <div class="card-head">
+            <h3>Hoạt động gần đây</h3>
+            <button class="btn ghost" id="btnRefreshDash">Làm mới</button>
+          </div>
+          <div id="recentActivity" class="activity-list"></div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tabKeys">
+        <article class="glass card">
+          <div class="card-head wrap">
+            <h3>Quản lý key</h3>
+            <div class="row">
+              <input id="keySearch" placeholder="Tìm key, HWID, ghi chú..." />
+              <select id="keyStatusFilter">
+                <option value="all">Tất cả trạng thái</option>
+                <option value="active">active</option>
+                <option value="expired">expired</option>
+                <option value="revoked">revoked</option>
+                <option value="banned">banned</option>
+              </select>
+              <button id="btnOpenCreateKey" class="btn primary">+ Tạo key</button>
+              <button id="btnOpenBulk" class="btn neon">Tạo hàng loạt</button>
+              <button id="btnLoadLicenses" class="btn ghost">Làm mới</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="licensesTable">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>Trạng thái</th>
+                  <th>HWID (hash)</th>
+                  <th>Thiết bị gắn</th>
+                  <th>Hết hạn</th>
+                  <th>Tạo lúc</th>
+                  <th>Dùng lần cuối</th>
+                  <th>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="keyStatus" class="status"></div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tabDevices">
+        <article class="glass card">
+          <div class="card-head">
+            <h3>Theo dõi người dùng / thiết bị</h3>
+            <button id="btnLoadDevices" class="btn ghost">Làm mới thiết bị</button>
+          </div>
+          <div class="table-wrap">
+            <table id="devicesTable">
+              <thead>
+                <tr>
+                  <th>HWID</th>
+                  <th>Địa chỉ IP</th>
+                  <th>Key liên kết</th>
+                  <th>Hoạt động cuối</th>
+                  <th>Trạng thái</th>
+                  <th>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tabBans">
+        <div class="grid-2">
+          <article class="glass card">
+            <h3>Ban IP</h3>
+            <div class="row">
+              <input id="banIp" placeholder="IP (vd: 1.2.3.4)" />
+              <input id="banIpReason" placeholder="Lý do" />
+              <input id="banIpExpire" type="datetime-local" />
+              <button id="btnBanIp" class="btn danger">Ban IP</button>
+            </div>
+            <div class="table-wrap">
+              <table id="ipBanTable">
+                <thead>
+                  <tr>
+                    <th>IP</th>
+                    <th>Lý do</th>
+                    <th>Trạng thái</th>
+                    <th>Tao</th>
+                    <th>Hết hạn</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="glass card">
+            <h3>Ban HWID</h3>
+            <div class="row">
+              <input id="banHwid" placeholder="HWID" />
+              <input id="banHwidReason" placeholder="Lý do" />
+              <input id="banHwidExpire" type="datetime-local" />
+              <button id="btnBanHwid" class="btn danger">Ban HWID</button>
+            </div>
+            <div class="table-wrap">
+              <table id="hwidBanTable">
+                <thead>
+                  <tr>
+                    <th>HWID</th>
+                    <th>Lý do</th>
+                    <th>Trạng thái</th>
+                    <th>Tao</th>
+                    <th>Hết hạn</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tabLogs">
+        <article class="glass card">
+          <div class="card-head wrap">
+            <h3>Nhật ký / Theo dõi hoạt động</h3>
+            <div class="row">
+              <input id="logsSearch" placeholder="Tìm sự kiện, ip, hwid..." />
+              <select id="logsType">
+                <option value="">Tất cả loại sự kiện</option>
+                <option value="admin_login">admin_login</option>
+                <option value="license_check">license_check</option>
+                <option value="license_create">license_create</option>
+                <option value="ip_ban">ip_ban</option>
+                <option value="hwid_ban">hwid_ban</option>
+                <option value="error">error</option>
+              </select>
+              <input id="logsFrom" type="datetime-local" />
+              <input id="logsTo" type="datetime-local" />
+              <button id="btnLoadEvents" class="btn ghost">Lọc nhật ký</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="logsTable">
+              <thead>
+                <tr>
+                  <th>Sự kiện</th>
+                  <th>IP</th>
+                  <th>User / HWID</th>
+                  <th>Trạng thái</th>
+                  <th>Chi tiết</th>
+                  <th>Thời gian</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="tab-panel" id="tabSettings">
+        <article class="glass card">
+          <h3>Cài đặt</h3>
+          <div class="settings-grid">
+            <label>Thời hạn key mặc định (ngày)
+              <input id="st_default_duration" type="number" min="1" />
+            </label>
+            <label>Số thiết bị tối đa mỗi key
+              <input id="st_max_devices" type="number" min="1" />
+            </label>
+            <label>Bật ràng buộc HWID
+              <select id="st_enable_hwid">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Quy tắc auto-ban
+              <select id="st_auto_ban">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Ngưỡng fail để auto-ban IP
+              <input id="st_auto_fail_limit" type="number" min="2" max="100" />
+            </label>
+            <label>Cửa sổ theo dõi (giây)
+              <input id="st_auto_window_seconds" type="number" min="60" max="86400" />
+            </label>
+            <label>Thời gian ban tự động (giây)
+              <input id="st_auto_ban_seconds" type="number" min="60" max="604800" />
+            </label>
+            <label>Ngưỡng sự kiện mismatch (hash HWID) để auto-ban HWID
+              <input id="st_auto_mismatch_limit" type="number" min="1" max="50" />
+            </label>
+            <label class="full" style="grid-column: 1 / -1; margin-top: 0.5rem"><strong>Ban thông minh — từng trigger (cần bật &quot;Quy tắc auto-ban&quot; ở trên)</strong></label>
+            <label>Ban IP: quá nhiều lần nhập key sai
+              <select id="st_rule_failed_attempts">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Ban HWID: quá nhiều mismatch (spoof / share)
+              <select id="st_rule_hwid_mismatch">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Ban IP: nhiều HWID khác nhau (xoay HWID — cẩn thận NAT)
+              <select id="st_rule_multi_hwid_ip">
+                <option value="0">Tắt</option>
+                <option value="1">Bật</option>
+              </select>
+            </label>
+            <label>Ngưỡng số HWID khác nhau / IP
+              <input id="st_multi_hwid_limit" type="number" min="3" max="500" />
+            </label>
+            <label>Cửa sổ đếm HWID/IP (giây)
+              <input id="st_multi_hwid_window" type="number" min="60" max="86400" />
+            </label>
+            <label>Ban IP: flood chữ ký / nonce không hợp lệ
+              <select id="st_rule_invalid_sig">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Ngưỡng sự kiện chữ ký sai
+              <input id="st_invalid_sig_limit" type="number" min="5" max="500" />
+            </label>
+            <label>Cửa sổ đếm chữ ký (giây)
+              <input id="st_invalid_sig_window" type="number" min="60" max="86400" />
+            </label>
+            <label>Auto-ban key khi đổi HWID quá thường (share key)
+              <select id="st_hwid_swap_ban">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Số lần mismatch / key (cửa sổ dưới) để ban key
+              <input id="st_hwid_swap_limit" type="number" min="2" max="100" />
+            </label>
+            <label>Cửa sổ đếm mismatch key (giây)
+              <input id="st_hwid_swap_window" type="number" min="60" max="86400" />
+            </label>
+            <label>Giới hạn request / IP (mỗi cửa sổ)
+              <input id="st_api_rate_ip" type="number" min="1" max="100000" />
+            </label>
+            <label>Giới hạn request / license key (mỗi cửa sổ)
+              <input id="st_api_rate_key" type="number" min="1" max="100000" />
+            </label>
+            <label>Cửa sổ rate limit (giây)
+              <input id="st_api_rate_window" type="number" min="1" max="3600" />
+            </label>
+            <label class="full">Origin được phép (cách nhau bởi dấu phẩy; để trống = không kiểm tra Origin)
+              <input id="st_api_allowed_origins" placeholder="https://app.example.com,http://localhost:5173" />
+            </label>
+            <label>Auto-ban IP khi vượt rate quá nhiều lần
+              <select id="st_api_auto_ban_rate">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Ngưỡng lần vượt rate để ban IP
+              <input id="st_api_rate_ban_threshold" type="number" min="5" max="1000" />
+            </label>
+            <label>Cửa sổ đếm vượt rate (giây)
+              <input id="st_api_rate_ban_window" type="number" min="60" max="86400" />
+            </label>
+            <label class="full" style="grid-column: 1 / -1; margin-top: 0.5rem"><strong>Chữ ký request license (HMAC)</strong></label>
+            <label>Bắt buộc HMAC + nonce + timestamp
+              <select id="st_license_sig_required">
+                <option value="1">Bật</option>
+                <option value="0">Tắt (legacy)</option>
+              </select>
+            </label>
+            <label>Cho phép canonical cũ (không app_version)
+              <select id="st_license_sig_legacy">
+                <option value="1">Có</option>
+                <option value="0">Không</option>
+              </select>
+            </label>
+            <label>Lệch đồng hồ tối đa (giây)
+              <input id="st_license_clock_skew" type="number" min="30" max="7200" />
+            </label>
+            <label>Giữ nonce đã dùng (giây, chống replay)
+              <input id="st_license_nonce_retain" type="number" min="120" max="2592000" />
+            </label>
+            <label>Độ dài nonce tối thiểu
+              <input id="st_license_nonce_min" type="number" min="8" max="128" />
+            </label>
+            <label class="full">API Base URL
+              <input id="st_api_base_url" placeholder="http://127.0.0.1:8787" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="btnSaveSettings" class="btn primary">Lưu cài đặt</button>
+            <button id="btnLoadSettings" class="btn ghost">Tải lại</button>
+          </div>
+          <div id="settingsStatus" class="status"></div>
+        </article>
+      </section>
+    </div>
+  </section>
+
+  <div id="keyModal" class="modal hidden">
+    <div class="modal-card glass">
+      <h3 id="keyModalTitle">Tạo key</h3>
+      <div class="settings-grid">
+        <label>Chế độ
+          <select id="km_mode">
+            <option value="create">Tạo mới</option>
+            <option value="edit">Chỉnh sửa</option>
+          </select>
+        </label>
+        <label>Thời hạn (ngày)
+          <select id="km_duration">
+            <option value="7">7</option>
+            <option value="30">30</option>
+          </select>
+        </label>
+        <label>Số lượng
+          <input id="km_qty" type="number" min="1" max="200" value="1" />
+        </label>
+        <label>Trạng thái
+          <select id="km_status">
+            <option value="">(giữ nguyên)</option>
+            <option value="active">active</option>
+            <option value="revoked">revoked</option>
+            <option value="banned">banned</option>
+          </select>
+        </label>
+        <label class="full">License key (nhập tay/tạo 1 key)
+          <input id="km_key" placeholder="Bỏ trống để tự sinh" />
+        </label>
+        <label class="full">Gán HWID
+              <input id="km_hwid" placeholder="HWID plaintext hoặc hash 64 ký tự (admin gán tay)" />
+        </label>
+        <label class="full">Ghi chú
+          <input id="km_note" />
+        </label>
+      </div>
+      <div class="row right">
+        <button id="btnModalCancel" class="btn ghost">Hủy</button>
+        <button id="btnModalSave" class="btn primary">Lưu</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="modal hidden">
+    <div class="modal-card glass">
+      <h3>Xác nhận thao tác</h3>
+      <p id="confirmMessage">Bạn có chắc không?</p>
+      <div class="row right">
+        <button id="btnConfirmNo" class="btn ghost">Hủy</button>
+        <button id="btnConfirmYes" class="btn danger">Xác nhận</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loadingOverlay" class="loading hidden">
+    <div class="spinner"></div>
+    <p>Đang tải...</p>
+  </div>
+
+  <div id="toastStack" class="toast-stack"></div>
+  <script src="/static/app.js?v=20260323h"></script>
+</body>
+</html>

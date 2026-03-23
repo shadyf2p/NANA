@@ -1,0 +1,6 @@
+2026/03/23-12:42:39.195 1ef0 Creating DB E:\MMO\dist\chrome_user_data\PROFILE_1\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb since it was missing.
+2026/03/23-12:42:39.501 1ef0 Reusing MANIFEST E:\MMO\dist\chrome_user_data\PROFILE_1\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/MANIFEST-000001
+2026/03/23-12:42:40.170 1590 Level-0 table #5: started
+2026/03/23-12:42:40.402 1590 Level-0 table #5: 1317 bytes OK
+2026/03/23-12:42:40.579 1590 Delete type=0 #3
+2026/03/23-12:42:40.579 1590 Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

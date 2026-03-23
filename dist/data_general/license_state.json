@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "ACTIVE": true,
+  "license_key": "VEO3-77A0-51C2-BCDC-B4DD",
+  "machine_id": "01755931be1fa20a05ab847c4191b39304897126ecd029d25b5b3652790c16ae",
+  "expires_at": 1774857688,
+  "server_ts": 1774253002,
+  "nonce": "8fdf53949af24043ab7a034426638ecc",
+  "features": "{\"name\":\"Licensed User\",\"sdt\":\"0000000000\"}",
+  "checked_at": 1774253002
+}

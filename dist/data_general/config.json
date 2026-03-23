@@ -1,0 +1,43 @@
+{
+  "MULTI_VIDEO": 3,
+  "OUTPUT_COUNT": 1,
+  "CREATE_IMAGE_MODEL": "Imagen 4",
+  "WAIT_GEN_VIDEO": 15,
+  "WAIT_GEN_IMAGE": 15,
+  "CLEAR_DATA_IMAGE": 11,
+  "RETRY_WITH_ERROR": 3,
+  "CLEAR_DATA": 5,
+  "CLEAR_DATA_WAIT": 4,
+  "WAIT_RESEND_VIDEO": 10,
+  "DOWNLOAD_MODE": "720",
+  "TOKEN_OPTION": "Option 2",
+  "SEED_MODE": "Random",
+  "SEED_VALUE": 9797,
+  "VIDEO_ASPECT_RATIO": "9:16",
+  "VEO_MODEL": "Veo 3.1 - Fast",
+  "VIDEO_OUTPUT_DIR": "E:\\MMO\\dist\\downloads",
+  "IDEA_SCENE_COUNT": 1,
+  "IDEA_STYLE": "2d_Cartoon",
+  "IDEA_DIALOGUE_LANGUAGE": "中文 (zh-CN)",
+  "GROK_VIDEO_LENGTH_SECONDS": 6,
+  "GROK_VIDEO_RESOLUTION": "480p",
+  "GROK_ACCOUNT_TYPE": "SUPER",
+  "account1": {
+    "sessionId": "",
+    "projectId": "",
+    "access_token": "",
+    "cookie": "",
+    "TYPE_ACCOUNT": "ULTRA",
+    "folder_user_data_get_token": "E:\\MMO\\dist\\chrome_user_data\\PROFILE_1",
+    "URL_GEN_TOKEN": "https://labs.google/fx/vi/tools/flow",
+    "email": "None",
+    "password": "None"
+  },
+  "grok_account": {
+    "type_account": "SUPER",
+    "TYPE_ACCOUNT": "SUPER",
+    "email": "None",
+    "password": "None"
+  },
+  "offscreen_chrome": true
+}
