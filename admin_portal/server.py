@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import base64
+import bcrypt
 import hashlib
 import hmac
 import ipaddress
@@ -74,6 +75,112 @@ def now_ts() -> int:
 
 def sign_hmac_hex(secret: str, msg: str) -> str:
     return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _bcrypt_hash_password(password: str) -> str:
+    return bcrypt.hashpw(str(password or "").encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _bcrypt_verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bool(bcrypt.checkpw(str(password or "").encode("utf-8"), str(hashed or "").encode("utf-8")))
+    except Exception:
+        return False
+
+
+def _b64u_encode_bytes(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64u_decode_bytes(text: str) -> bytes:
+    padded = str(text or "") + ("=" * ((4 - (len(str(text or "")) % 4)) % 4))
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def _issue_jwt(payload: dict[str, Any]) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h64 = _b64u_encode_json(header)
+    p64 = _b64u_encode_json(payload)
+    sig = hmac.new(LICENSE_SECRET.encode("utf-8"), f"{h64}.{p64}".encode("utf-8"), hashlib.sha256).digest()
+    s64 = _b64u_encode_bytes(sig)
+    return f"{h64}.{p64}.{s64}"
+
+
+def _verify_jwt(token: str, expected_type: str) -> tuple[dict[str, Any] | None, str]:
+    raw = str(token or "").strip()
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return None, "invalid_token_format"
+    h64, p64, s64 = parts
+    try:
+        sig = _b64u_decode_bytes(s64)
+    except Exception:
+        return None, "invalid_token_signature"
+    exp_sig = hmac.new(LICENSE_SECRET.encode("utf-8"), f"{h64}.{p64}".encode("utf-8"), hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, exp_sig):
+        return None, "invalid_token_signature"
+    payload = _b64u_decode_json(p64)
+    if not payload:
+        return None, "invalid_token_payload"
+    try:
+        exp = int(payload.get("exp") or 0)
+        typ = str(payload.get("typ") or "")
+    except Exception:
+        return None, "invalid_token_payload"
+    if typ != expected_type:
+        return None, "invalid_token_type"
+    if exp <= 0 or now_ts() >= exp:
+        return None, "token_expired"
+    return payload, ""
+
+
+def _normalize_username(username: str) -> str:
+    return str(username or "").strip().lower()
+
+
+def _is_valid_username(username: str) -> bool:
+    return bool(re.fullmatch(r"[a-zA-Z0-9_.-]{3,32}", str(username or "").strip()))
+
+
+def _is_valid_role(role: str) -> bool:
+    return str(role or "").strip().lower() in {"admin", "mod"}
+
+
+def _totp_normalize_secret(secret: str) -> str:
+    s = re.sub(r"[^A-Z2-7]", "", str(secret or "").strip().upper())
+    return s
+
+
+def _totp_generate_secret(length: int = 32) -> str:
+    # Base32 alphabet; 32 chars ~ 160 bits
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    return "".join(secrets.choice(alphabet) for _ in range(max(16, int(length))))
+
+
+def _totp_code(secret: str, ts: int, period: int = 30, digits: int = 6) -> str:
+    sec = _totp_normalize_secret(secret)
+    if not sec:
+        return ""
+    pad = "=" * ((8 - (len(sec) % 8)) % 8)
+    key = base64.b32decode(sec + pad, casefold=True)
+    counter = int(ts // period)
+    msg = counter.to_bytes(8, "big")
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    code_int = int.from_bytes(digest[off : off + 4], "big") & 0x7FFFFFFF
+    mod = 10 ** int(digits)
+    return str(code_int % mod).zfill(digits)
+
+
+def _verify_totp(secret: str, code: str, *, now: int | None = None, skew_steps: int = 1) -> bool:
+    c = re.sub(r"\D", "", str(code or "").strip())
+    if len(c) != 6:
+        return False
+    t = int(now if now is not None else now_ts())
+    for i in range(-int(skew_steps), int(skew_steps) + 1):
+        if _totp_code(secret, t + i * 30) == c:
+            return True
+    return False
 
 
 def hash_license_key(license_key: str) -> str:
@@ -281,6 +388,25 @@ def init_db() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'mod',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                totp_secret TEXT NOT NULL DEFAULT '',
+                totp_enabled INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        user_cols = {r[1] for r in cur.execute("PRAGMA table_info(users)").fetchall()}
+        if "totp_secret" not in user_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''")
+        if "totp_enabled" not in user_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
         license_cols = {r[1] for r in cur.execute("PRAGMA table_info(licenses)").fetchall()}
         if "last_used_at" not in license_cols:
             cur.execute("ALTER TABLE licenses ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0")
@@ -395,6 +521,13 @@ def init_db() -> None:
             "session_suspicious_ip_change_limit": "3",
             "session_suspicious_ua_change_limit": "3",
             "session_auto_revoke_on_suspicious": "1",
+            "auth_access_token_ttl_seconds": str(max(120, ACCESS_TOKEN_TTL_SECONDS)),
+            "auth_refresh_token_ttl_seconds": str(max(3600, REFRESH_TOKEN_TTL_SECONDS)),
+            "password_policy_min_length": "8",
+            "password_policy_require_upper": "1",
+            "password_policy_require_lower": "1",
+            "password_policy_require_digit": "1",
+            "password_policy_require_special": "0",
             "db_backup_enabled": "1",
             "db_backup_interval_seconds": "3600",
             "db_backup_retention_days": "14",
@@ -407,6 +540,19 @@ def init_db() -> None:
         }
         for k, v in defaults.items():
             cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
+
+        # Bootstrap admin user (bcrypt) nếu chưa tồn tại.
+        now = now_ts()
+        admin_user = _normalize_username(ADMIN_USER)
+        admin_row = cur.execute("SELECT username FROM users WHERE username=?", (admin_user,)).fetchone()
+        if not admin_row:
+            cur.execute(
+                """
+                INSERT INTO users(username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (?, ?, 'admin', 1, ?, ?)
+                """,
+                (admin_user, _bcrypt_hash_password(ADMIN_PASS), now, now),
+            )
 
         # Migrate legacy plaintext keys to hashed storage in-place.
         legacy_rows = cur.execute(
@@ -509,6 +655,26 @@ def _setting_int(settings_map: dict[str, str], key: str, default: int, min_value
     if n > max_value:
         return max_value
     return n
+
+
+def _setting_bool(settings_map: dict[str, str], key: str, default: str = "0") -> bool:
+    return _is_true_value(settings_map.get(key, default))
+
+
+def _validate_password_by_policy(password: str, settings_map: dict[str, str]) -> str:
+    pwd = str(password or "")
+    min_len = _setting_int(settings_map, "password_policy_min_length", 8, 6, 128)
+    if len(pwd) < min_len:
+        return f"password_too_short_min_{min_len}"
+    if _setting_bool(settings_map, "password_policy_require_upper", "1") and not re.search(r"[A-Z]", pwd):
+        return "password_missing_upper"
+    if _setting_bool(settings_map, "password_policy_require_lower", "1") and not re.search(r"[a-z]", pwd):
+        return "password_missing_lower"
+    if _setting_bool(settings_map, "password_policy_require_digit", "1") and not re.search(r"\d", pwd):
+        return "password_missing_digit"
+    if _setting_bool(settings_map, "password_policy_require_special", "0") and not re.search(r"[^A-Za-z0-9]", pwd):
+        return "password_missing_special"
+    return ""
 
 
 def _settings_map_conn(conn: sqlite3.Connection) -> dict[str, str]:
@@ -1018,17 +1184,52 @@ def _hash_refresh_token(refresh_token: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _user_row_conn(conn: sqlite3.Connection, username: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT username, password_hash, role, is_active, totp_secret, totp_enabled FROM users WHERE username=?",
+        (_normalize_username(username),),
+    ).fetchone()
+
+
+def _issue_access_token(username: str, role: str, session_id: str, ttl_seconds: int) -> str:
+    now = now_ts()
+    payload = {
+        "typ": "access",
+        "sub": str(username or ""),
+        "role": str(role or "mod"),
+        "sid": str(session_id or ""),
+        "iat": now,
+        "exp": now + int(ttl_seconds),
+        "jti": uuid.uuid4().hex,
+    }
+    return _issue_jwt(payload)
+
+
+def _issue_refresh_token(username: str, session_id: str, ttl_seconds: int) -> str:
+    now = now_ts()
+    payload = {
+        "typ": "refresh",
+        "sub": str(username or ""),
+        "sid": str(session_id or ""),
+        "iat": now,
+        "exp": now + int(ttl_seconds),
+        "jti": uuid.uuid4().hex,
+    }
+    return _issue_jwt(payload)
+
+
 def _create_auth_session(user: str, ip: str, ua_fp: str) -> tuple[str, str, int]:
     now = now_ts()
     conn = db_connect()
     try:
         settings = _settings_map_conn(conn)
-        access_ttl = _setting_int(settings, "session_access_ttl_seconds", ACCESS_TOKEN_TTL_SECONDS, 120, 86400)
-        refresh_ttl = _setting_int(settings, "session_refresh_ttl_seconds", REFRESH_TOKEN_TTL_SECONDS, 3600, 2592000)
-
-        access_token = secrets.token_urlsafe(32)
-        refresh_token = secrets.token_urlsafe(48)
+        access_ttl = _setting_int(settings, "auth_access_token_ttl_seconds", ACCESS_TOKEN_TTL_SECONDS, 120, 86400)
+        refresh_ttl = _setting_int(settings, "auth_refresh_token_ttl_seconds", REFRESH_TOKEN_TTL_SECONDS, 3600, 2592000)
+        row = _user_row_conn(conn, user)
+        role = str(row["role"] if row else "admin")
         session_id = uuid.uuid4().hex
+        access_token = _issue_access_token(user, role, session_id, access_ttl)
+        refresh_token = _issue_refresh_token(user, session_id, refresh_ttl)
         refresh_hash = _hash_refresh_token(refresh_token)
         conn.execute(
             """
@@ -1040,7 +1241,6 @@ def _create_auth_session(user: str, ip: str, ua_fp: str) -> tuple[str, str, int]
         conn.commit()
     finally:
         conn.close()
-    sessions[access_token] = {"exp": now + access_ttl, "user": user, "sid": session_id}
     return access_token, refresh_token, access_ttl
 
 
@@ -1052,27 +1252,21 @@ def _revoke_session_id(session_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
-    # revoke all access tokens mapped to this session id
-    revoke_keys = [k for k, v in sessions.items() if str(v.get("sid", "")) == session_id]
-    for tk in revoke_keys:
-        sessions.pop(tk, None)
 
 
-def session_user(handler: "AdminHandler") -> str | None:
+def _session_claims(handler: "AdminHandler") -> dict[str, Any] | None:
     auth = str(handler.headers.get("Authorization", "")).strip()
     if not auth.startswith("Bearer "):
         return None
     token = auth.replace("Bearer ", "", 1).strip()
-    info = sessions.get(token)
-    if not info:
+    claims, err = _verify_jwt(token, "access")
+    if err or not claims:
         return None
-    exp = int(info.get("exp", 0) or 0)
-    if time.time() > float(exp):
-        sessions.pop(token, None)
+    sid = str(claims.get("sid", "") or "")
+    sub = str(claims.get("sub", "") or "")
+    if not sid or not sub:
         return None
-    sid = str(info.get("sid", "") or "")
-    if not sid:
-        return None
+
     conn = db_connect()
     try:
         row = conn.execute(
@@ -1082,11 +1276,9 @@ def session_user(handler: "AdminHandler") -> str | None:
     finally:
         conn.close()
     if not row:
-        sessions.pop(token, None)
         return None
     now = now_ts()
-    if int(row["revoked_at"] or 0) > 0 or now >= int(row["expires_at"] or 0):
-        sessions.pop(token, None)
+    if int(row["revoked_at"] or 0) > 0 or now >= int(row["expires_at"] or 0) or str(row["user"] or "") != sub:
         return None
     # cập nhật hoạt động session + phát hiện thay đổi bất thường
     conn2 = db_connect()
@@ -1114,22 +1306,54 @@ def session_user(handler: "AdminHandler") -> str | None:
             if _is_true_value(settings.get("session_auto_revoke_on_suspicious", "1")) and new_susp >= lim:
                 conn2.execute("UPDATE auth_sessions SET revoked_at=?, suspicious_count=? WHERE session_id=?", (now, new_susp, sid))
                 conn2.commit()
-                sessions.pop(token, None)
                 return None
             conn2.execute(
                 "UPDATE auth_sessions SET last_seen_at=?, last_ip=?, last_ua=?, suspicious_count=? WHERE session_id=?",
                 (now, ip, ua_fp, new_susp, sid),
             )
             conn2.commit()
+            urow = _user_row_conn(conn2, sub)
+            if not urow or int(urow["is_active"] or 0) != 1:
+                return None
+            return {
+                "user": str(urow["username"] or sub),
+                "role": str(urow["role"] or "mod"),
+                "sid": sid,
+            }
     finally:
         conn2.close()
-    return str(row["user"] or "")
+    return None
+
+
+def session_user(handler: "AdminHandler") -> str | None:
+    claims = _session_claims(handler)
+    if not claims:
+        return None
+    return str(claims.get("user") or "")
 
 
 def require_auth(handler: "AdminHandler") -> bool:
-    user = session_user(handler)
-    if not user:
+    claims = getattr(handler, "_auth_claims", None)
+    if not claims:
+        claims = _session_claims(handler)
+    if not claims:
         json_response(handler, {"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+        return False
+    setattr(handler, "_auth_claims", claims)
+    return True
+
+
+def require_role(handler: "AdminHandler", roles: set[str]) -> bool:
+    claims = getattr(handler, "_auth_claims", None)
+    if not claims:
+        claims = _session_claims(handler)
+        if not claims:
+            json_response(handler, {"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+            return False
+        setattr(handler, "_auth_claims", claims)
+    role = str(claims.get("role") or "mod")
+    if role not in set(roles):
+        json_response(handler, {"ok": False, "error": "forbidden"}, HTTPStatus.FORBIDDEN)
         return False
     return True
 
@@ -1137,6 +1361,13 @@ def require_auth(handler: "AdminHandler") -> bool:
 def _refresh_session_tokens(handler: "AdminHandler", refresh_token: str) -> tuple[dict[str, Any] | None, int]:
     ip = normalize_ip(handler)
     ua_fp = _fingerprint_ua(handler)
+    claims, tok_err = _verify_jwt(refresh_token, "refresh")
+    if tok_err or not claims:
+        return {"ok": False, "error": tok_err or "invalid_refresh_token"}, HTTPStatus.UNAUTHORIZED
+    sid_claim = str(claims.get("sid") or "")
+    sub_claim = str(claims.get("sub") or "")
+    if not sid_claim or not sub_claim:
+        return {"ok": False, "error": "invalid_refresh_token"}, HTTPStatus.UNAUTHORIZED
     rh = _hash_refresh_token(refresh_token)
     now = now_ts()
     conn = db_connect()
@@ -1145,11 +1376,13 @@ def _refresh_session_tokens(handler: "AdminHandler", refresh_token: str) -> tupl
         row = conn.execute(
             """
             SELECT session_id, user, expires_at, revoked_at, last_ip, last_ua, suspicious_count
-            FROM auth_sessions WHERE refresh_hash=?
+            FROM auth_sessions WHERE refresh_hash=? AND session_id=?
             """,
-            (rh,),
+            (rh, sid_claim),
         ).fetchone()
         if not row:
+            return {"ok": False, "error": "invalid_refresh_token"}, HTTPStatus.UNAUTHORIZED
+        if str(row["user"] or "") != sub_claim:
             return {"ok": False, "error": "invalid_refresh_token"}, HTTPStatus.UNAUTHORIZED
         if int(row["revoked_at"] or 0) > 0:
             return {"ok": False, "error": "refresh_token_revoked"}, HTTPStatus.UNAUTHORIZED
@@ -1185,10 +1418,17 @@ def _refresh_session_tokens(handler: "AdminHandler", refresh_token: str) -> tupl
             _revoke_session_id(str(row["session_id"]))
             return {"ok": False, "error": "session_revoked_suspicious"}, HTTPStatus.UNAUTHORIZED
 
-        access_ttl = _setting_int(settings, "session_access_ttl_seconds", ACCESS_TOKEN_TTL_SECONDS, 120, 86400)
-        refresh_ttl = _setting_int(settings, "session_refresh_ttl_seconds", REFRESH_TOKEN_TTL_SECONDS, 3600, 2592000)
-        new_access = secrets.token_urlsafe(32)
-        new_refresh = secrets.token_urlsafe(48)
+        urow = _user_row_conn(conn, str(row["user"] or ""))
+        if not urow or int(urow["is_active"] or 0) != 1:
+            return {"ok": False, "error": "user_disabled"}, HTTPStatus.UNAUTHORIZED
+
+        access_ttl = _setting_int(settings, "auth_access_token_ttl_seconds", ACCESS_TOKEN_TTL_SECONDS, 120, 86400)
+        refresh_ttl = _setting_int(settings, "auth_refresh_token_ttl_seconds", REFRESH_TOKEN_TTL_SECONDS, 3600, 2592000)
+        sid = str(row["session_id"] or "")
+        role = str(urow["role"] or "mod")
+        user = str(row["user"] or ADMIN_USER)
+        new_access = _issue_access_token(user, role, sid, access_ttl)
+        new_refresh = _issue_refresh_token(user, sid, refresh_ttl)
         new_refresh_hash = _hash_refresh_token(new_refresh)
         conn.execute(
             """
@@ -1199,16 +1439,11 @@ def _refresh_session_tokens(handler: "AdminHandler", refresh_token: str) -> tupl
             (new_refresh_hash, now + refresh_ttl, now, ip, ua_fp, new_susp, row["session_id"]),
         )
         conn.commit()
-        # rotate access tokens for this session
-        sid = str(row["session_id"] or "")
-        old_tokens = [k for k, v in sessions.items() if str(v.get("sid", "")) == sid]
-        for tk in old_tokens:
-            sessions.pop(tk, None)
-        sessions[new_access] = {"exp": now + access_ttl, "user": str(row["user"] or ADMIN_USER), "sid": sid}
         return {
             "ok": True,
             "access_token": new_access,
             "refresh_token": new_refresh,
+            "token": new_access,
             "expires_in": access_ttl,
             "session_suspicious_count": new_susp,
         }, HTTPStatus.OK
@@ -1395,6 +1630,14 @@ class AdminHandler(SimpleHTTPRequestHandler):
             if _guard_ping_public_api(self):
                 return
             return json_response(self, {"ok": True, "ts": now_ts()})
+        protected_get_mod = {"/api/dashboard", "/api/licenses", "/api/bans", "/api/events", "/api/devices"}
+        protected_get_admin = {"/api/settings", "/api/users", "/api/users/sessions"}
+        if path in protected_get_mod:
+            if not require_role(self, {"admin", "mod"}):
+                return
+        if path in protected_get_admin:
+            if not require_role(self, {"admin"}):
+                return
         if path == "/api/dashboard":
             return self._api_dashboard()
         if path == "/api/licenses":
@@ -1407,12 +1650,53 @@ class AdminHandler(SimpleHTTPRequestHandler):
             return self._api_list_devices()
         if path == "/api/settings":
             return self._api_get_settings()
+        if path == "/api/users":
+            return self._api_list_users()
+        if path == "/api/users/sessions":
+            return self._api_list_user_sessions(query)
 
         return super().do_GET()
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+
+        protected_post_mod = {
+            "/api/bans/ip",
+            "/api/bans/hwid",
+            "/api/bans/ip/update",
+            "/api/bans/hwid/update",
+            "/api/bans/ip/remove",
+            "/api/bans/hwid/remove",
+            "/api/devices/unbind",
+            "/api/devices/ban",
+            "/api/devices/kick",
+        }
+        protected_post_admin = {
+            "/api/licenses/create",
+            "/api/licenses/update",
+            "/api/licenses/delete",
+            "/api/licenses/extend",
+            "/api/licenses/revoke",
+            "/api/licenses/unrevoke",
+            "/api/settings/update",
+            "/api/users/create",
+            "/api/users/role",
+            "/api/users/disable",
+            "/api/users/reset_password",
+            "/api/users/revoke_all_sessions",
+            "/api/users/revoke_active_sessions",
+            "/api/users/revoke_session",
+            "/api/2fa/setup",
+            "/api/2fa/enable",
+            "/api/2fa/disable",
+        }
+        if path in protected_post_mod:
+            if not require_role(self, {"admin", "mod"}):
+                return
+        if path in protected_post_admin:
+            if not require_role(self, {"admin"}):
+                return
 
         if path == "/api/login":
             return self._api_login()
@@ -1452,6 +1736,26 @@ class AdminHandler(SimpleHTTPRequestHandler):
             return self._api_kick_device()
         if path == "/api/settings/update":
             return self._api_update_settings()
+        if path == "/api/users/create":
+            return self._api_create_user()
+        if path == "/api/users/role":
+            return self._api_set_user_role()
+        if path == "/api/users/disable":
+            return self._api_set_user_active()
+        if path == "/api/users/reset_password":
+            return self._api_reset_user_password()
+        if path == "/api/users/revoke_all_sessions":
+            return self._api_revoke_all_user_sessions()
+        if path == "/api/users/revoke_active_sessions":
+            return self._api_revoke_active_user_sessions()
+        if path == "/api/users/revoke_session":
+            return self._api_revoke_single_session()
+        if path == "/api/2fa/setup":
+            return self._api_2fa_setup()
+        if path == "/api/2fa/enable":
+            return self._api_2fa_enable()
+        if path == "/api/2fa/disable":
+            return self._api_2fa_disable()
         if path == "/api/check":
             return self._api_check_license()
         if path == "/api/proof/verify":
@@ -1463,16 +1767,36 @@ class AdminHandler(SimpleHTTPRequestHandler):
 
     def _api_login(self) -> None:
         body = read_json_body(self)
-        username = str(body.get("username", "")).strip()
+        username = _normalize_username(str(body.get("username", "")).strip())
         password = str(body.get("password", "")).strip()
-
-        if username != ADMIN_USER or password != ADMIN_PASS:
-            insert_event("admin_login", normalize_ip(self), status="failed", detail="bad_credentials")
+        totp_code = str(body.get("totp_code", "")).strip()
+        if not username or not password:
+            insert_event("admin_login", normalize_ip(self), status="failed", detail="missing_credentials")
             return json_response(self, {"ok": False, "error": "invalid_credentials"}, HTTPStatus.UNAUTHORIZED)
+        if not _is_valid_username(username):
+            insert_event("admin_login", normalize_ip(self), status="failed", detail="invalid_username_format")
+            return json_response(self, {"ok": False, "error": "invalid_credentials"}, HTTPStatus.UNAUTHORIZED)
+        conn = db_connect()
+        try:
+            urow = _user_row_conn(conn, username)
+        finally:
+            conn.close()
+        if not urow or int(urow["is_active"] or 0) != 1:
+            insert_event("admin_login", normalize_ip(self), status="failed", detail="user_not_found_or_disabled")
+            return json_response(self, {"ok": False, "error": "invalid_credentials"}, HTTPStatus.UNAUTHORIZED)
+        if not _bcrypt_verify_password(password, str(urow["password_hash"] or "")):
+            insert_event("admin_login", normalize_ip(self), status="failed", detail="bad_password")
+            return json_response(self, {"ok": False, "error": "invalid_credentials"}, HTTPStatus.UNAUTHORIZED)
+        if int(urow["totp_enabled"] or 0) == 1:
+            secret = str(urow["totp_secret"] or "")
+            if not _verify_totp(secret, totp_code):
+                insert_event("admin_login", normalize_ip(self), status="failed", detail="totp_required_or_invalid")
+                return json_response(self, {"ok": False, "error": "totp_required"}, HTTPStatus.UNAUTHORIZED)
 
         ip = normalize_ip(self)
         ua_fp = _fingerprint_ua(self)
-        access_token, refresh_token, ttl = _create_auth_session(ADMIN_USER, ip, ua_fp)
+        user_name = str(urow["username"] or username)
+        access_token, refresh_token, ttl = _create_auth_session(user_name, ip, ua_fp)
         insert_event("admin_login", normalize_ip(self), status="ok")
         json_response(
             self,
@@ -1482,6 +1806,8 @@ class AdminHandler(SimpleHTTPRequestHandler):
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "expires_in": ttl,
+                "role": str(urow["role"] or "mod"),
+                "username": user_name,
             },
         )
 
@@ -1514,8 +1840,11 @@ class AdminHandler(SimpleHTTPRequestHandler):
 
         auth = str(self.headers.get("Authorization", "")).strip()
         token = auth.replace("Bearer ", "", 1).strip() if auth.startswith("Bearer ") else ""
-        info = sessions.get(token) if token else None
-        sid = str(info.get("sid", "") or "") if info else ""
+        sid = ""
+        if token:
+            claims, err = _verify_jwt(token, "access")
+            if not err and claims:
+                sid = str(claims.get("sid") or "")
         if sid:
             _revoke_session_id(sid)
             insert_event("token_revoke", normalize_ip(self), status="ok", detail="by_access")
@@ -2200,6 +2529,345 @@ class AdminHandler(SimpleHTTPRequestHandler):
             conn.close()
         insert_event("settings_update", normalize_ip(self), status="ok", detail=f"count={len(items)}")
         json_response(self, {"ok": True})
+
+    def _api_list_users(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        conn = db_connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT username, role, is_active, totp_enabled, created_at, updated_at
+                FROM users
+                ORDER BY username ASC
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        data = [
+            {
+                "username": str(r["username"]),
+                "role": str(r["role"]),
+                "is_active": int(r["is_active"] or 0),
+                "totp_enabled": int(r["totp_enabled"] or 0),
+                "created_at": int(r["created_at"] or 0),
+                "updated_at": int(r["updated_at"] or 0),
+                "created_at_text": to_iso(int(r["created_at"] or 0)),
+                "updated_at_text": to_iso(int(r["updated_at"] or 0)),
+            }
+            for r in rows
+        ]
+        json_response(self, {"ok": True, "data": data})
+
+    def _api_create_user(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        password = str(body.get("password", "") or "")
+        role = str(body.get("role", "mod") or "mod").strip().lower()
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        if not _is_valid_role(role):
+            return json_response(self, {"ok": False, "error": "invalid_role"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            st = _settings_map_conn(conn)
+        finally:
+            conn.close()
+        perr = _validate_password_by_policy(password, st)
+        if perr:
+            return json_response(self, {"ok": False, "error": perr}, HTTPStatus.BAD_REQUEST)
+        now = now_ts()
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO users(username, password_hash, role, is_active, totp_secret, totp_enabled, created_at, updated_at)
+                    VALUES (?, ?, ?, 1, '', 0, ?, ?)
+                    """,
+                    (username, _bcrypt_hash_password(password), role, now, now),
+                )
+            except sqlite3.IntegrityError:
+                return json_response(self, {"ok": False, "error": "user_exists"}, HTTPStatus.CONFLICT)
+            conn.commit()
+        finally:
+            conn.close()
+        insert_event("user_create", normalize_ip(self), status="ok", detail=f"user={username};role={role}")
+        json_response(self, {"ok": True})
+
+    def _api_set_user_role(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        role = str(body.get("role", "")).strip().lower()
+        if not _is_valid_username(username) or not _is_valid_role(role):
+            return json_response(self, {"ok": False, "error": "invalid_input"}, HTTPStatus.BAD_REQUEST)
+        if username == _normalize_username(ADMIN_USER) and role != "admin":
+            return json_response(self, {"ok": False, "error": "cannot_downgrade_bootstrap_admin"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET role=?, updated_at=? WHERE username=?", (role, now_ts(), username))
+            if cur.rowcount <= 0:
+                return json_response(self, {"ok": False, "error": "user_not_found"}, HTTPStatus.NOT_FOUND)
+            conn.commit()
+        finally:
+            conn.close()
+        insert_event("user_set_role", normalize_ip(self), status="ok", detail=f"user={username};role={role}")
+        json_response(self, {"ok": True})
+
+    def _api_set_user_active(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        raw_active = body.get("is_active", True)
+        active = 1 if str(raw_active).strip().lower() in {"1", "true", "yes", "on"} else 0
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        if username == _normalize_username(ADMIN_USER) and active == 0:
+            return json_response(self, {"ok": False, "error": "cannot_disable_bootstrap_admin"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET is_active=?, updated_at=? WHERE username=?", (active, now_ts(), username))
+            if cur.rowcount <= 0:
+                return json_response(self, {"ok": False, "error": "user_not_found"}, HTTPStatus.NOT_FOUND)
+            conn.commit()
+        finally:
+            conn.close()
+        if active == 0:
+            self._revoke_all_sessions_for_user(username)
+        insert_event("user_set_active", normalize_ip(self), status="ok", detail=f"user={username};active={active}")
+        json_response(self, {"ok": True})
+
+    def _api_reset_user_password(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        new_password = str(body.get("new_password", "") or "")
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        conn0 = db_connect()
+        try:
+            st = _settings_map_conn(conn0)
+        finally:
+            conn0.close()
+        perr = _validate_password_by_policy(new_password, st)
+        if perr:
+            return json_response(self, {"ok": False, "error": perr}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET password_hash=?, updated_at=? WHERE username=?",
+                (_bcrypt_hash_password(new_password), now_ts(), username),
+            )
+            if cur.rowcount <= 0:
+                return json_response(self, {"ok": False, "error": "user_not_found"}, HTTPStatus.NOT_FOUND)
+            conn.commit()
+        finally:
+            conn.close()
+        self._revoke_all_sessions_for_user(username)
+        insert_event("user_reset_password", normalize_ip(self), status="ok", detail=f"user={username}")
+        json_response(self, {"ok": True})
+
+    def _api_revoke_all_user_sessions(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        n = self._revoke_all_sessions_for_user(username, active_only=False)
+        insert_event("user_revoke_sessions", normalize_ip(self), status="ok", detail=f"user={username};count={n}")
+        json_response(self, {"ok": True, "revoked": n})
+
+    def _api_revoke_active_user_sessions(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        username = _normalize_username(str(body.get("username", "")))
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        n = self._revoke_all_sessions_for_user(username, active_only=True)
+        insert_event("user_revoke_active_sessions", normalize_ip(self), status="ok", detail=f"user={username};count={n}")
+        json_response(self, {"ok": True, "revoked": n})
+
+    def _api_list_user_sessions(self, query: dict[str, list[str]]) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        username = _normalize_username(self._query_param(query, "username", ""))
+        if not username:
+            return json_response(self, {"ok": False, "error": "missing_username"}, HTTPStatus.BAD_REQUEST)
+        include_revoked = _is_true_value(self._query_param(query, "include_revoked", "0"))
+        status_filter = str(self._query_param(query, "status", "")).strip().lower()
+        ip_filter = str(self._query_param(query, "ip", "")).strip()
+        conn = db_connect()
+        try:
+            where = "WHERE user=?"
+            params: list[Any] = [username]
+            if not include_revoked:
+                where += " AND revoked_at=0"
+            rows = conn.execute(
+                f"""
+                SELECT session_id, user, created_at, expires_at, revoked_at, last_seen_at, last_ip, last_ua, suspicious_count
+                FROM auth_sessions
+                {where}
+                ORDER BY created_at DESC
+                LIMIT 500
+                """,
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+        now = now_ts()
+        data = []
+        for r in rows:
+            revoked_at = int(r["revoked_at"] or 0)
+            expires_at = int(r["expires_at"] or 0)
+            status = "revoked" if revoked_at > 0 else ("expired" if now >= expires_at else "active")
+            last_ip = str(r["last_ip"] or "")
+            if status_filter and status_filter in {"active", "expired", "revoked"} and status != status_filter:
+                continue
+            if ip_filter and ip_filter not in last_ip:
+                continue
+            data.append(
+                {
+                    "session_id": str(r["session_id"]),
+                    "user": str(r["user"]),
+                    "created_at": int(r["created_at"] or 0),
+                    "created_at_text": to_iso(int(r["created_at"] or 0)),
+                    "expires_at": expires_at,
+                    "expires_at_text": to_iso(expires_at),
+                    "revoked_at": revoked_at,
+                    "revoked_at_text": to_iso(revoked_at) if revoked_at > 0 else "",
+                    "last_seen_at": int(r["last_seen_at"] or 0),
+                    "last_seen_at_text": to_iso(int(r["last_seen_at"] or 0)),
+                    "last_ip": last_ip,
+                    "suspicious_count": int(r["suspicious_count"] or 0),
+                    "status": status,
+                }
+            )
+        json_response(self, {"ok": True, "data": data})
+
+    def _api_revoke_single_session(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        session_id = str(body.get("session_id", "")).strip()
+        if not session_id:
+            return json_response(self, {"ok": False, "error": "missing_session_id"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            row = conn.execute("SELECT user FROM auth_sessions WHERE session_id=?", (session_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return json_response(self, {"ok": False, "error": "session_not_found"}, HTTPStatus.NOT_FOUND)
+        _revoke_session_id(session_id)
+        insert_event("user_revoke_session", normalize_ip(self), status="ok", detail=f"user={row['user']};sid={session_id[:12]}")
+        json_response(self, {"ok": True})
+
+    def _api_2fa_setup(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        claims = getattr(self, "_auth_claims", {}) or {}
+        username = _normalize_username(str(body.get("username", "") or claims.get("user", "")))
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        secret = _totp_generate_secret(32)
+        issuer = str(body.get("issuer", "AdminPortal") or "AdminPortal").strip()
+        account = username
+        otp_uri = f"otpauth://totp/{issuer}:{account}?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
+        # Không lưu ngay; chỉ enable sau khi verify code.
+        json_response(self, {"ok": True, "secret": secret, "otpauth_uri": otp_uri})
+
+    def _api_2fa_enable(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        claims = getattr(self, "_auth_claims", {}) or {}
+        username = _normalize_username(str(body.get("username", "") or claims.get("user", "")))
+        secret = _totp_normalize_secret(str(body.get("secret", "") or ""))
+        code = str(body.get("code", "") or "")
+        if not _is_valid_username(username) or not secret:
+            return json_response(self, {"ok": False, "error": "invalid_input"}, HTTPStatus.BAD_REQUEST)
+        if not _verify_totp(secret, code):
+            return json_response(self, {"ok": False, "error": "invalid_totp_code"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET totp_secret=?, totp_enabled=1, updated_at=? WHERE username=?",
+                (secret, now_ts(), username),
+            )
+            if cur.rowcount <= 0:
+                return json_response(self, {"ok": False, "error": "user_not_found"}, HTTPStatus.NOT_FOUND)
+            conn.commit()
+        finally:
+            conn.close()
+        self._revoke_all_sessions_for_user(username)
+        insert_event("user_2fa_enable", normalize_ip(self), status="ok", detail=f"user={username}")
+        json_response(self, {"ok": True})
+
+    def _api_2fa_disable(self) -> None:
+        if not require_role(self, {"admin"}):
+            return
+        body = read_json_body(self)
+        claims = getattr(self, "_auth_claims", {}) or {}
+        username = _normalize_username(str(body.get("username", "") or claims.get("user", "")))
+        actor = _normalize_username(str(claims.get("user", "") or ""))
+        code = str(body.get("code", "") or "")
+        if not _is_valid_username(username):
+            return json_response(self, {"ok": False, "error": "invalid_username"}, HTTPStatus.BAD_REQUEST)
+        conn = db_connect()
+        try:
+            row = _user_row_conn(conn, username)
+            if not row:
+                return json_response(self, {"ok": False, "error": "user_not_found"}, HTTPStatus.NOT_FOUND)
+            # Nếu admin disable cho user khác: cho phép không cần mã của user đó.
+            need_code = int(row["totp_enabled"] or 0) == 1 and actor == username
+            if need_code:
+                if not _verify_totp(str(row["totp_secret"] or ""), code):
+                    return json_response(self, {"ok": False, "error": "invalid_totp_code"}, HTTPStatus.BAD_REQUEST)
+            conn.execute(
+                "UPDATE users SET totp_secret='', totp_enabled=0, updated_at=? WHERE username=?",
+                (now_ts(), username),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self._revoke_all_sessions_for_user(username)
+        insert_event("user_2fa_disable", normalize_ip(self), status="ok", detail=f"user={username}")
+        json_response(self, {"ok": True})
+
+    def _revoke_all_sessions_for_user(self, username: str, active_only: bool = False) -> int:
+        uname = _normalize_username(username)
+        now = now_ts()
+        conn = db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at=?
+                WHERE user=? AND revoked_at=0
+                  AND (?=0 OR expires_at>?)
+                """,
+                (now, uname, 1 if active_only else 0, now),
+            )
+            changed = int(cur.rowcount or 0)
+            conn.commit()
+        finally:
+            conn.close()
+        return changed
 
     def _api_client_security_event(self) -> None:
         body = read_json_body(self)

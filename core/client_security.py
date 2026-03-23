@@ -196,9 +196,10 @@ def _verify_pe_signature_windows(file_path: Path) -> tuple[bool, str]:
         return True, "not_windows"
     if not file_path.exists():
         return False, "missing_file"
+    escaped_path = str(file_path).replace("'", "''")
     cmd = (
         "powershell -NoProfile -Command "
-        f"\"$s=Get-AuthenticodeSignature -FilePath '{str(file_path).replace(\"'\", \"''\")}';"
+        f"\"$s=Get-AuthenticodeSignature -FilePath '{escaped_path}';"
         "Write-Output ($s.Status.ToString() + '|' + ($s.SignerCertificate.Subject -as [string]))\""
     )
     try:
@@ -217,4 +218,93 @@ def _verify_pe_signature_windows(file_path: Path) -> tuple[bool, str]:
 def _collect_pe_targets() -> list[Path]:
     targets: list[Path] = []
     try:
-        exe = Path(sys.executable)
+        exe = Path(sys.executable).resolve()
+        if exe.exists():
+            targets.append(exe)
+    except Exception:
+        pass
+    if APP_DIR.exists():
+        for p in sorted(APP_DIR.glob("*.exe")):
+            if p not in targets:
+                targets.append(p)
+        # giới hạn để tránh check quá nặng
+        dlls = sorted(APP_DIR.glob("*.dll"))[:40]
+        for p in dlls:
+            if p not in targets:
+                targets.append(p)
+    return targets
+
+
+@dataclass
+class SecurityReport:
+    mode: str  # normal | degraded | blocked
+    risk: int
+    reasons: list[str]
+
+
+def evaluate_client_security(*, include_signature_check: bool = True) -> SecurityReport:
+    """
+    Đánh giá bảo mật client.
+    - normal: chạy bình thường
+    - degraded: khóa chức năng nhạy cảm nhưng vẫn mở app
+    - blocked: mức rủi ro quá cao
+    Mục tiêu: tăng chi phí bypass, không thay thế server-side validation.
+    """
+    risk = 0
+    issues: list[tuple[str, str, int]] = []
+
+    if _is_debugger_present():
+        issues.append(("debugger_detected", "debugger_present", 45))
+    tools = _find_suspicious_tools()
+    if tools:
+        issues.append(("hook_detected", ",".join(tools[:4]), 30))
+    if _detect_vm_hint():
+        issues.append(("vm_detected", "vm_hint", 20))
+
+    ok_manifest, manifest_issues = _verify_manifest()
+    if not ok_manifest:
+        # Manifest missing chỉ cảnh báo nhẹ; mismatch thì nặng hơn.
+        score = 10 if manifest_issues == ["manifest_missing"] else 60
+        issues.append(("tamper_detected", ";".join(manifest_issues[:4]), score))
+
+    if include_signature_check:
+        strict_sig = str(os.getenv("CLIENT_SECURITY_SIGNATURE_STRICT", "0")).strip() in {"1", "true", "yes", "on"}
+        for p in _collect_pe_targets():
+            ok_sig, sig_reason = _verify_pe_signature_windows(p)
+            if not ok_sig:
+                score = 35 if strict_sig else 15
+                issues.append(("binary_signature_invalid", f"{p.name}:{sig_reason}", score))
+                # tránh cộng quá nhiều nếu thư mục có nhiều dll unsigned
+                if len([x for x in issues if x[0] == "binary_signature_invalid"]) >= 4:
+                    break
+
+    for t, d, s in issues:
+        risk += s
+        _send_signal(t, d, s)
+
+    # anti-hook timing simple check
+    t0 = time.perf_counter()
+    time.sleep(0.05)
+    delta_ms = (time.perf_counter() - t0) * 1000.0
+    if delta_ms > 400.0:
+        risk += 20
+        _send_signal("runtime_patch_detected", f"sleep_drift_ms={delta_ms:.1f}", 20)
+
+    block_threshold = int(str(os.getenv("CLIENT_SECURITY_BLOCK_THRESHOLD", "110")).strip() or "110")
+    degrade_threshold = int(str(os.getenv("CLIENT_SECURITY_DEGRADE_THRESHOLD", "60")).strip() or "60")
+    mode = "normal"
+    if risk >= max(1, block_threshold):
+        mode = "blocked"
+    elif risk >= max(1, degrade_threshold):
+        mode = "degraded"
+    reasons = [f"{t}:{d}" for t, d, _s in issues]
+    return SecurityReport(mode=mode, risk=risk, reasons=reasons[:8])
+
+
+def enforce_client_security() -> bool:
+    """
+    Backward-compat: trả False khi blocked/degraded.
+    """
+    rep = evaluate_client_security(include_signature_check=True)
+    return rep.mode == "normal"
+

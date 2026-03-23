@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "ACTIVE": true,
+  "license_key": "VE03-C0FC-5FA1-4038",
+  "machine_id": "01755931be1fa20a05ab847c4191b39304897126ecd029d25b5b3652790c16ae",
+  "expires_at": 1774871753,
+  "server_ts": 1774267130,
+  "nonce": "7e66699c615d4ac7a313b09dcc127b6c",
+  "features": "{\"name\":\"Licensed User\",\"sdt\":\"0000000000\"}",
+  "license_proof": "eyJ2IjoxLCJraCI6ImNjNjZhMzk2ZDJmNThlZjFiMzkwMzFmNGU4MDVlYmFmOTE0NDdjY2JkNmFjNjgzMWE3NTY5MThiYmNhYWVjOGIiLCJoaCI6IjAxNzU1OTMxYmUxZmEyMGEwNWFiODQ3YzQxOTFiMzkzMDQ4OTcxMjZlY2QwMjlkMjViNWIzNjUyNzkwYzE2YWUiLCJpYXQiOjE3NzQyNjcxMzAsImV4cCI6MTc3NDI2NzI1MCwianRpIjoiMTEwYTYzMGMxODY0M2M5YyJ9.d8cbd426a56511a1a112972997faec8c9469bfe82df347804fb55002e45dabde",
+  "proof_expires_at": 1774267250,
+  "checked_at": 1774267130
+}

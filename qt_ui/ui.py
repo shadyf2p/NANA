@@ -47,7 +47,7 @@ from qt_ui.settings_manager import BASE_DIR, get_icon_path
 
 from qt_ui import worker_run_workflow
 from qt_ui.worker_run_workflow import WorkflowRunWorker, WorkflowQueueItem
-from core import client_security
+import core.client_security as client_security
 
 
 _APP_ROOT = str(BASE_DIR)
@@ -838,6 +838,7 @@ class MainWindow(QMainWindow):
         self._security_mode = "normal"
         self._security_last_risk = 0
         self._security_notice_shown = False
+        self._security_tick_count = 0
         self.setWindowTitle(str(WINDOW_TITLE) if WINDOW_TITLE else 'VEO TOOL')
         
         app_ic = app_logo_icon()
@@ -1296,6 +1297,51 @@ class MainWindow(QMainWindow):
     def _on_worker_stop_requested(self) -> None:
         self.btn_start.setEnabled(False)
 
+    def _security_allows_run(self) -> bool:
+        return self._security_mode == "normal"
+
+    def _apply_security_report(self, report: client_security.SecurityReport, startup: bool = False) -> None:
+        mode = str(report.mode or "normal")
+        self._security_mode = mode
+        self._security_last_risk = int(report.risk or 0)
+        reasons = "; ".join(report.reasons[:3]) if report.reasons else ""
+        if mode == "normal":
+            self.security_banner.hide()
+            self.btn_start.setEnabled(True)
+            self.btn_stop.setEnabled(True)
+            return
+
+        # degraded/blocked: khóa chức năng chạy workflow, vẫn cho xem trạng thái/cài đặt.
+        self.btn_start.setEnabled(False)
+        # cho dừng nếu đang chạy để hạ rủi ro.
+        self.btn_stop.setEnabled(True)
+        self.security_banner.setText(f"Security mode: {mode.upper()} | risk={self._security_last_risk} | {reasons}")
+        self.security_banner.show()
+        if self.status.isRunning() or self._queue_worker.is_busy():
+            self._queue_worker.stop_all()
+
+        if not self._security_notice_shown:
+            self._security_notice_shown = True
+            QMessageBox.warning(
+                self,
+                "Bảo mật client",
+                (
+                    "Phát hiện rủi ro bảo mật, ứng dụng chuyển sang chế độ hạn chế.\n"
+                    "Bạn vẫn có thể xem trạng thái/cài đặt, nhưng bị khóa tác vụ chạy workflow."
+                ),
+            )
+
+    def _security_tick(self) -> None:
+        # periodic background re-check (không chỉ lúc startup)
+        self._security_tick_count += 1
+        # Check chữ ký số thưa hơn để giảm overhead.
+        include_sig = (self._security_tick_count % 5 == 0)
+        try:
+            rep = client_security.evaluate_client_security(include_signature_check=include_sig)
+            self._apply_security_report(rep, startup=False)
+        except Exception:
+            pass
+
     def _is_add_to_queue_mode(self) -> bool:
         return bool(self.status.isRunning()) or self._queue_worker.is_busy()
 
@@ -1311,6 +1357,9 @@ class MainWindow(QMainWindow):
         return self.status.start_queued_job(item.mode_key, item.rows)
 
     def _enqueue_payload(self, payload: dict | None) -> None:
+        if not self._security_allows_run():
+            QMessageBox.warning(self, 'Security mode', 'Đang ở chế độ hạn chế bảo mật: không cho phép enqueue workflow.')
+            return
         if not isinstance(payload, dict):
             return
             
@@ -1406,6 +1455,8 @@ class MainWindow(QMainWindow):
         self._update_start_button_for_tab()
 
     def _enqueue_jobs(self, jobs: list) -> None:
+        if not self._security_allows_run():
+            return
         if not jobs:
             return
         for payload in jobs:
@@ -1429,6 +1480,9 @@ class MainWindow(QMainWindow):
         self._update_start_button_for_tab()
 
     def _on_start_stop(self) -> None:
+        if not self._security_allows_run():
+            QMessageBox.warning(self, 'Security mode', 'Client đang ở chế độ hạn chế bảo mật. Vui lòng kiểm tra môi trường chạy.')
+            return
         flow_name = self._flow_name_from_current_tab()
         
         if flow_name == 'settings':
@@ -1642,4 +1696,32 @@ class MainWindow(QMainWindow):
         if flow_name == 'grok_text_to_video':
             payload = self.status.enqueue_grok_text_to_video(prompts)
         else:
-            payload = self.status.enqueue_text_to_video(promp
+            payload = self.status.enqueue_text_to_video(prompts)
+            
+        self._enqueue_payload(payload)
+
+    def _set_running_state(self, running: bool) -> None:
+        self._queue_worker.on_run_state_changed(bool(running))
+        self._update_start_button_for_tab()
+        self.btn_start.setEnabled(self._security_allows_run())
+        self.btn_stop.setEnabled(True)
+
+    def closeEvent(self, event) -> None:
+        self.status.shutdown(timeout_ms=2200)
+        super().closeEvent(event)
+
+def main(initial_security_report: client_security.SecurityReport | None = None) -> None:
+    app = QApplication(sys.argv)
+    app_ic = app_logo_icon()
+    if not app_ic.isNull():
+        app.setWindowIcon(app_ic)
+        
+    install_messagebox_theme()
+    apply_style(app)
+    
+    cfg = AppConfig.load()
+    rep = initial_security_report or client_security.evaluate_client_security(include_signature_check=True)
+    win = MainWindow(cfg, initial_security_report=rep)
+    win.show()
+    
+    sys.exit(app.exec())

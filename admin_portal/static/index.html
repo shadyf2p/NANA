@@ -27,6 +27,8 @@
         <input id="username" value="admin" />
         <label for="password">Mật khẩu</label>
         <input id="password" type="password" placeholder="Nhập mật khẩu..." />
+        <label for="totpCode">Mã 2FA (nếu đã bật)</label>
+        <input id="totpCode" placeholder="123456" />
         <button id="btnLogin" class="btn primary">Đăng nhập</button>
         <div id="loginStatus" class="status"></div>
       </div>
@@ -385,6 +387,153 @@
             <button id="btnLoadSettings" class="btn ghost">Tải lại</button>
           </div>
           <div id="settingsStatus" class="status"></div>
+        </article>
+        <article class="glass card">
+          <div class="card-head wrap">
+            <h3>Quản lý User / Role / 2FA</h3>
+            <div class="row">
+              <button id="btnLoadUsers" class="btn ghost">Tải users</button>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <label class="full" style="grid-column: 1 / -1; margin-top: 0.5rem"><strong>Chính sách mật khẩu</strong></label>
+            <label>Độ dài tối thiểu
+              <input id="st_pwd_min_len" type="number" min="6" max="128" />
+            </label>
+            <label>Bắt buộc chữ hoa
+              <select id="st_pwd_upper">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Bắt buộc chữ thường
+              <select id="st_pwd_lower">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Bắt buộc số
+              <select id="st_pwd_digit">
+                <option value="1">Bật</option>
+                <option value="0">Tắt</option>
+              </select>
+            </label>
+            <label>Bắt buộc ký tự đặc biệt
+              <select id="st_pwd_special">
+                <option value="0">Tắt</option>
+                <option value="1">Bật</option>
+              </select>
+            </label>
+
+            <label>Username mới
+              <input id="usr_new_username" placeholder="vd: mod01" />
+            </label>
+            <label>Password mới
+              <input id="usr_new_password" type="password" placeholder="ít nhất 8 ký tự" />
+            </label>
+            <label>Role
+              <select id="usr_new_role">
+                <option value="mod">mod</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <label class="full">
+              <button id="btnCreateUser" class="btn primary">Tạo user</button>
+            </label>
+
+            <label>User thao tác
+              <input id="usr_target_username" placeholder="username cần chỉnh" />
+            </label>
+            <label>Set role
+              <select id="usr_target_role">
+                <option value="mod">mod</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <label>Trạng thái
+              <select id="usr_target_active">
+                <option value="1">Active</option>
+                <option value="0">Disable</option>
+              </select>
+            </label>
+            <label>Mật khẩu mới (reset)
+              <input id="usr_target_new_password" type="password" placeholder="mật khẩu mới" />
+            </label>
+            <label>Mã TOTP (enable/disable 2FA)
+              <input id="usr_target_totp_code" placeholder="123456" />
+            </label>
+            <label class="full">Secret TOTP tạm (từ Setup)
+              <input id="usr_target_totp_secret" placeholder="secret để Enable 2FA" />
+            </label>
+            <label class="full">OTP URI (scan QR bằng app Authenticator)
+              <input id="usr_target_totp_uri" readonly />
+            </label>
+            <label class="full">
+              <div class="row">
+                <button id="btnSetUserRole" class="btn">Set Role</button>
+                <button id="btnSetUserActive" class="btn">Set Active/Disable</button>
+                <button id="btnResetUserPassword" class="btn">Reset Password</button>
+                <button id="btnRevokeUserSessions" class="btn danger">Revoke All Sessions</button>
+              </div>
+            </label>
+            <label class="full">
+              <div class="row">
+                <button id="btn2faSetup" class="btn">2FA Setup</button>
+                <button id="btn2faEnable" class="btn primary">2FA Enable</button>
+                <button id="btn2faDisable" class="btn danger">2FA Disable</button>
+              </div>
+            </label>
+          </div>
+          <div class="table-wrap">
+            <table id="usersTable">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Active</th>
+                  <th>2FA</th>
+                  <th>Tạo lúc</th>
+                  <th>Cập nhật</th>
+                  <th>Thao tác nhanh</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="row">
+            <input id="usr_sessions_username" placeholder="username để xem session" />
+            <select id="usr_sessions_status">
+              <option value="">Tất cả status</option>
+              <option value="active">active</option>
+              <option value="expired">expired</option>
+              <option value="revoked">revoked</option>
+            </select>
+            <input id="usr_sessions_ip" placeholder="lọc theo IP (contains)" />
+            <label style="display:flex;align-items:center;gap:6px">
+              <input id="usr_sessions_include_revoked" type="checkbox" />
+              <span>Hiện cả revoked</span>
+            </label>
+            <button id="btnLoadUserSessions" class="btn ghost">Tải sessions</button>
+            <button id="btnRevokeActiveSessions" class="btn danger">Revoke All Active Sessions</button>
+          </div>
+          <div class="table-wrap">
+            <table id="userSessionsTable">
+              <thead>
+                <tr>
+                  <th>Session ID</th>
+                  <th>Status</th>
+                  <th>Last IP</th>
+                  <th>Suspicious</th>
+                  <th>Created</th>
+                  <th>Last seen</th>
+                  <th>Expires</th>
+                  <th>Revoke</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="usersStatus" class="status"></div>
         </article>
       </section>
     </div>

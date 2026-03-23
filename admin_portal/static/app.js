@@ -1,9 +1,25 @@
 let token = "";
+let refreshToken = "";
+let tokenRefreshPromise = null;
+let meRole = "";
 let licenseCache = [];
+const recentPlainKeysByRef = new Map();
 let deviceCache = [];
 let logsCache = [];
 let banCache = { ips: [], hwids: [] };
+let userCache = [];
+let userSessionCache = [];
 let pendingConfirmAction = null;
+
+function forceRelogin(message = "Phiên đăng nhập đã hết hạn hoặc bị thu hồi. Vui lòng đăng nhập lại.") {
+  token = "";
+  refreshToken = "";
+  tokenRefreshPromise = null;
+  meRole = "";
+  qs("appBox")?.classList.add("hidden");
+  qs("loginBox")?.classList.remove("hidden");
+  setStatus("loginStatus", message, true);
+}
 
 function qs(id) {
   return document.getElementById(id);
@@ -77,6 +93,22 @@ function setLastRefresh() {
   if (tag) tag.textContent = `Cập nhật lúc: ${now}`;
 }
 
+function rememberCreatedKeys(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  for (const r of items) {
+    const ref = String(r?.license_ref || "").trim();
+    const plain = String(r?.license_key || "").trim();
+    if (!ref || !plain) continue;
+    recentPlainKeysByRef.set(ref, plain);
+  }
+  // Giới hạn cache nhẹ để tránh tăng vô hạn.
+  if (recentPlainKeysByRef.size > 500) {
+    const extra = recentPlainKeysByRef.size - 500;
+    const keys = Array.from(recentPlainKeysByRef.keys());
+    for (let i = 0; i < extra; i++) recentPlainKeysByRef.delete(keys[i]);
+  }
+}
+
 function openConfirm(message, action) {
   pendingConfirmAction = action || null;
   qs("confirmMessage").textContent = message;
@@ -91,8 +123,54 @@ function closeConfirm() {
 async function api(path, method = "GET", body = null, auth = true) {
   const headers = { "Content-Type": "application/json" };
   if (auth && token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
-  const data = await res.json().catch(() => ({}));
+  let res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
+  let data = await res.json().catch(() => ({}));
+
+  // Auto refresh access token một lần khi 401.
+  if (auth && res.status === 401 && refreshToken && path !== "/api/token/refresh") {
+    if (!tokenRefreshPromise) {
+      tokenRefreshPromise = (async () => {
+        const r = await fetch("/api/token/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          const err = String(d.error || `HTTP ${r.status}`);
+          const mustRelogin = [
+            "refresh_token_revoked",
+            "refresh_token_expired",
+            "session_revoked_suspicious",
+            "invalid_refresh_token",
+            "user_disabled",
+          ];
+          if (mustRelogin.includes(err)) {
+            forceRelogin();
+            throw new Error("session_expired_relogin_required");
+          }
+          throw new Error(err);
+        }
+        token = d.access_token || d.token || "";
+        refreshToken = d.refresh_token || refreshToken;
+      })().finally(() => {
+        tokenRefreshPromise = null;
+      });
+    }
+    try {
+      await tokenRefreshPromise;
+    } catch (e) {
+      if (String(e?.message || "") === "session_expired_relogin_required") {
+        throw new Error("vui_long_dang_nhap_lai");
+      }
+      throw e;
+    }
+    const retryHeaders = { "Content-Type": "application/json" };
+    if (token) retryHeaders.Authorization = `Bearer ${token}`;
+    res = await fetch(path, { method, headers: retryHeaders, body: body ? JSON.stringify(body) : null });
+    data = await res.json().catch(() => ({}));
+  }
+
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
@@ -324,6 +402,58 @@ function renderLogs() {
   }
 }
 
+function renderUsers() {
+  const tbody = qs("usersTable")?.querySelector("tbody");
+  if (!tbody) return;
+  tbody.innerHTML = (userCache || [])
+    .map((u) => {
+      const uname = String(u.username || "");
+      const role = String(u.role || "mod");
+      const active = Number(u.is_active || 0) === 1;
+      const totp = Number(u.totp_enabled || 0) === 1;
+      return `
+        <tr>
+          <td>${escapeHtml(uname)}</td>
+          <td>${escapeHtml(role)}</td>
+          <td><span class="pill ${active ? "active" : "banned"}">${active ? "active" : "disabled"}</span></td>
+          <td><span class="pill ${totp ? "active" : "expired"}">${totp ? "on" : "off"}</span></td>
+          <td>${escapeHtml(u.created_at_text || "")}</td>
+          <td>${escapeHtml(u.updated_at_text || "")}</td>
+          <td>
+            <button class="btn xs" onclick="pickUser('${escapeHtml(uname)}', '${escapeHtml(role)}', ${active ? 1 : 0})">Chọn</button>
+            <button class="btn xs danger" onclick="revokeUserSessionsQuick('${escapeHtml(uname)}')">Revoke sessions</button>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderUserSessions() {
+  const tbody = qs("userSessionsTable")?.querySelector("tbody");
+  if (!tbody) return;
+  tbody.innerHTML = (userSessionCache || [])
+    .map((s) => {
+      const sid = String(s.session_id || "");
+      const st = String(s.status || "");
+      const susp = Number(s.suspicious_count || 0);
+      const suspWarn = susp >= 3;
+      return `
+        <tr class="${suspWarn ? "row-alert" : ""}">
+          <td title="${escapeHtml(sid)}">${escapeHtml(sid.slice(0, 14) + (sid.length > 14 ? "..." : ""))}</td>
+          <td><span class="pill ${st === "active" ? "active" : (st === "revoked" ? "banned" : "expired")}">${escapeHtml(st)}</span></td>
+          <td>${escapeHtml(s.last_ip || "")}</td>
+          <td><span class="pill ${suspWarn ? "banned" : "active"}">${escapeHtml(String(susp))}${suspWarn ? " ⚠" : ""}</span></td>
+          <td>${escapeHtml(s.created_at_text || "")}</td>
+          <td>${escapeHtml(s.last_seen_at_text || "")}</td>
+          <td>${escapeHtml(s.expires_at_text || "")}</td>
+          <td><button class="btn xs danger" onclick="revokeSingleSession('${escapeHtml(sid)}')">Revoke</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 async function loadDashboard() {
   const d = await api("/api/dashboard");
   renderDashboard(d);
@@ -331,7 +461,13 @@ async function loadDashboard() {
 
 async function loadLicenses() {
   const d = await api("/api/licenses");
-  licenseCache = d?.data || [];
+  const rows = Array.isArray(d?.data) ? d.data : [];
+  licenseCache = rows.map((r) => {
+    const ref = String(r?.license_ref || r?.license_key || "");
+    const plain = recentPlainKeysByRef.get(ref) || "";
+    if (!plain) return r;
+    return { ...r, license_key_plain: plain };
+  });
   renderLicenses();
 }
 
@@ -391,7 +527,40 @@ async function loadSettings() {
   qs("st_license_clock_skew").value = st.license_clock_skew_seconds || "300";
   qs("st_license_nonce_retain").value = st.license_nonce_retain_seconds || "172800";
   qs("st_license_nonce_min").value = st.license_nonce_min_length || "16";
+  qs("st_pwd_min_len").value = st.password_policy_min_length || "8";
+  qs("st_pwd_upper").value = st.password_policy_require_upper || "1";
+  qs("st_pwd_lower").value = st.password_policy_require_lower || "1";
+  qs("st_pwd_digit").value = st.password_policy_require_digit || "1";
+  qs("st_pwd_special").value = st.password_policy_require_special || "0";
   qs("st_api_base_url").value = st.api_base_url || "";
+}
+
+async function loadUsers() {
+  try {
+    const d = await api("/api/users");
+    userCache = d?.data || [];
+    renderUsers();
+    setStatus("usersStatus", "");
+  } catch (e) {
+    userCache = [];
+    renderUsers();
+    setStatus("usersStatus", `Không tải được users: ${e.message}`, true);
+  }
+}
+
+async function loadUserSessions() {
+  const username = qs("usr_sessions_username")?.value?.trim() || "";
+  if (!username) {
+    userSessionCache = [];
+    renderUserSessions();
+    return;
+  }
+  const includeRevoked = qs("usr_sessions_include_revoked")?.checked ? "1" : "0";
+  const status = encodeURIComponent(qs("usr_sessions_status")?.value || "");
+  const ip = encodeURIComponent(qs("usr_sessions_ip")?.value?.trim() || "");
+  const d = await api(`/api/users/sessions?username=${encodeURIComponent(username)}&include_revoked=${includeRevoked}&status=${status}&ip=${ip}`);
+  userSessionCache = d?.data || [];
+  renderUserSessions();
 }
 
 async function saveSettings() {
@@ -427,6 +596,11 @@ async function saveSettings() {
     license_clock_skew_seconds: String(qs("st_license_clock_skew").value || "300"),
     license_nonce_retain_seconds: String(qs("st_license_nonce_retain").value || "172800"),
     license_nonce_min_length: String(qs("st_license_nonce_min").value || "16"),
+    password_policy_min_length: String(qs("st_pwd_min_len").value || "8"),
+    password_policy_require_upper: String(qs("st_pwd_upper").value || "1"),
+    password_policy_require_lower: String(qs("st_pwd_lower").value || "1"),
+    password_policy_require_digit: String(qs("st_pwd_digit").value || "1"),
+    password_policy_require_special: String(qs("st_pwd_special").value || "0"),
     api_base_url: String(qs("st_api_base_url").value || ""),
   };
   await api("/api/settings/update", "POST", { items });
@@ -460,12 +634,13 @@ async function saveKeyModal() {
   const quantity = Number(qs("km_qty").value || "1");
 
   if (mode === "create") {
-    await api("/api/licenses/create", "POST", {
+    const createdResp = await api("/api/licenses/create", "POST", {
       duration_days,
       quantity,
       note,
       manual_key: key,
     });
+    rememberCreatedKeys(createdResp?.data || []);
     toast("Tạo key thành công");
   } else {
     if (!key) throw new Error("missing_license_key");
@@ -485,7 +660,7 @@ async function saveKeyModal() {
 async function refreshAll() {
   setLoading(true);
   try {
-    await Promise.all([loadDashboard(), loadLicenses(), loadDevices(), loadBans(), loadLogs(), loadSettings()]);
+    await Promise.allSettled([loadDashboard(), loadLicenses(), loadDevices(), loadBans(), loadLogs(), loadSettings(), loadUsers()]);
     setLastRefresh();
   } finally {
     setLoading(false);
@@ -497,17 +672,121 @@ async function doLogin() {
   try {
     const username = qs("username").value.trim();
     const password = qs("password").value;
-    const d = await api("/api/login", "POST", { username, password }, false);
-    token = d.token || "";
+    const totp_code = qs("totpCode")?.value?.trim() || "";
+    const d = await api("/api/login", "POST", { username, password, totp_code }, false);
+    token = d.access_token || d.token || "";
+    refreshToken = d.refresh_token || "";
+    meRole = d.role || "";
     qs("loginBox").classList.add("hidden");
     qs("appBox").classList.remove("hidden");
     setStatus("loginStatus", "");
     await refreshAll();
     toast("Đăng nhập thành công");
   } catch (e) {
-    setStatus("loginStatus", `Đăng nhập thất bại: ${e.message}`, true);
+    const msg = String(e.message || "");
+    if (msg.includes("totp_required")) {
+      setStatus("loginStatus", "Tài khoản yêu cầu mã 2FA. Vui lòng nhập mã OTP 6 số.", true);
+    } else {
+      setStatus("loginStatus", `Đăng nhập thất bại: ${msg}`, true);
+    }
     toast("Đăng nhập thất bại", true);
   }
+}
+
+window.pickUser = function pickUser(username, role, active) {
+  qs("usr_target_username").value = username || "";
+  qs("usr_target_role").value = role || "mod";
+  qs("usr_target_active").value = String(Number(active ? 1 : 0));
+  qs("usr_sessions_username").value = username || "";
+  loadUserSessions().catch(() => {});
+};
+
+window.revokeUserSessionsQuick = async function revokeUserSessionsQuick(username) {
+  openConfirm(`Revoke all sessions của ${username}?`, async () => {
+    await api("/api/users/revoke_all_sessions", "POST", { username });
+    await refreshAll();
+    toast("Đã revoke sessions");
+  });
+};
+
+window.revokeSingleSession = async function revokeSingleSession(sessionId) {
+  openConfirm(`Revoke session ${sessionId}?`, async () => {
+    await api("/api/users/revoke_session", "POST", { session_id: sessionId });
+    await loadUserSessions();
+    toast("Đã revoke session");
+  });
+};
+
+async function createUser() {
+  const username = qs("usr_new_username").value.trim();
+  const password = qs("usr_new_password").value;
+  const role = qs("usr_new_role").value;
+  await api("/api/users/create", "POST", { username, password, role });
+  setStatus("usersStatus", "Tạo user thành công");
+  await loadUsers();
+}
+
+async function setUserRole() {
+  const username = qs("usr_target_username").value.trim();
+  const role = qs("usr_target_role").value;
+  await api("/api/users/role", "POST", { username, role });
+  setStatus("usersStatus", "Đã cập nhật role");
+  await loadUsers();
+}
+
+async function setUserActive() {
+  const username = qs("usr_target_username").value.trim();
+  const is_active = qs("usr_target_active").value === "1";
+  await api("/api/users/disable", "POST", { username, is_active });
+  setStatus("usersStatus", "Đã cập nhật trạng thái user");
+  await loadUsers();
+}
+
+async function resetUserPassword() {
+  const username = qs("usr_target_username").value.trim();
+  const new_password = qs("usr_target_new_password").value;
+  await api("/api/users/reset_password", "POST", { username, new_password });
+  setStatus("usersStatus", "Đã reset password và revoke session");
+  qs("usr_target_new_password").value = "";
+}
+
+async function revokeUserSessions() {
+  const username = qs("usr_target_username").value.trim();
+  const d = await api("/api/users/revoke_all_sessions", "POST", { username });
+  setStatus("usersStatus", `Đã revoke ${Number(d.revoked || 0)} session`);
+}
+
+async function revokeActiveUserSessions() {
+  const username = qs("usr_sessions_username")?.value?.trim() || qs("usr_target_username")?.value?.trim() || "";
+  if (!username) throw new Error("missing_username");
+  const d = await api("/api/users/revoke_active_sessions", "POST", { username });
+  setStatus("usersStatus", `Đã revoke ${Number(d.revoked || 0)} active session`);
+  await loadUserSessions();
+}
+
+async function setup2fa() {
+  const username = qs("usr_target_username").value.trim();
+  const d = await api("/api/2fa/setup", "POST", { username });
+  qs("usr_target_totp_secret").value = d.secret || "";
+  qs("usr_target_totp_uri").value = d.otpauth_uri || "";
+  setStatus("usersStatus", "Đã tạo secret 2FA, hãy scan QR bằng app Authenticator");
+}
+
+async function enable2fa() {
+  const username = qs("usr_target_username").value.trim();
+  const secret = qs("usr_target_totp_secret").value.trim();
+  const code = qs("usr_target_totp_code").value.trim();
+  await api("/api/2fa/enable", "POST", { username, secret, code });
+  setStatus("usersStatus", "Đã bật 2FA");
+  await loadUsers();
+}
+
+async function disable2fa() {
+  const username = qs("usr_target_username").value.trim();
+  const code = qs("usr_target_totp_code").value.trim();
+  await api("/api/2fa/disable", "POST", { username, code });
+  setStatus("usersStatus", "Đã tắt 2FA");
+  await loadUsers();
 }
 
 window.copyKey = async function copyKey(key) {
@@ -641,6 +920,26 @@ function bindEvents() {
     }
   });
   qs("btnLoadSettings")?.addEventListener("click", loadSettings);
+  qs("btnLoadUsers")?.addEventListener("click", loadUsers);
+  qs("btnLoadUserSessions")?.addEventListener("click", async () => {
+    try {
+      await loadUserSessions();
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btnRevokeActiveSessions")?.addEventListener("click", async () => {
+    try {
+      await revokeActiveUserSessions();
+      toast("Đã revoke active sessions");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("usr_sessions_status")?.addEventListener("change", () => { loadUserSessions().catch(() => {}); });
+  qs("usr_sessions_include_revoked")?.addEventListener("change", () => { loadUserSessions().catch(() => {}); });
   qs("btnBanIp")?.addEventListener("click", async () => {
     try {
       await submitIpBan();
@@ -684,6 +983,79 @@ function bindEvents() {
 
   qs("keySearch")?.addEventListener("input", renderLicenses);
   qs("keyStatusFilter")?.addEventListener("change", renderLicenses);
+
+  qs("btnCreateUser")?.addEventListener("click", async () => {
+    try {
+      await createUser();
+      toast("Tạo user thành công");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btnSetUserRole")?.addEventListener("click", async () => {
+    try {
+      await setUserRole();
+      toast("Đã set role");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btnSetUserActive")?.addEventListener("click", async () => {
+    try {
+      await setUserActive();
+      toast("Đã cập nhật trạng thái user");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btnResetUserPassword")?.addEventListener("click", async () => {
+    try {
+      await resetUserPassword();
+      toast("Đã reset password");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btnRevokeUserSessions")?.addEventListener("click", async () => {
+    try {
+      await revokeUserSessions();
+      toast("Đã revoke sessions");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btn2faSetup")?.addEventListener("click", async () => {
+    try {
+      await setup2fa();
+      toast("Đã tạo secret 2FA");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btn2faEnable")?.addEventListener("click", async () => {
+    try {
+      await enable2fa();
+      toast("Bật 2FA thành công");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
+  qs("btn2faDisable")?.addEventListener("click", async () => {
+    try {
+      await disable2fa();
+      toast("Tắt 2FA thành công");
+    } catch (e) {
+      setStatus("usersStatus", e.message, true);
+      toast(e.message, true);
+    }
+  });
 }
 
 initNavigation();

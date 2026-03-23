@@ -1,11 +1,13 @@
 {
   "ok": true,
   "ACTIVE": true,
-  "license_key": "VEO3-77A0-51C2-BCDC-B4DD",
+  "license_key": "VE03-D157-DEDB-6679",
   "machine_id": "01755931be1fa20a05ab847c4191b39304897126ecd029d25b5b3652790c16ae",
-  "expires_at": 1774857688,
-  "server_ts": 1774253002,
-  "nonce": "8fdf53949af24043ab7a034426638ecc",
+  "expires_at": 1774871442,
+  "server_ts": 1774266674,
+  "nonce": "e52caeb67674490f8af9791001e2f799",
   "features": "{\"name\":\"Licensed User\",\"sdt\":\"0000000000\"}",
-  "checked_at": 1774253002
+  "license_proof": "eyJ2IjoxLCJraCI6IjVhYjhlYjQwZWNiMDM3NDg0NmIwNGE5NTM5ODkyNzg5OGU5ZDM4ZGY3MWVkZjg5YjZiYzQwNjc4ZWQwNjFlZWMiLCJoaCI6IjAxNzU1OTMxYmUxZmEyMGEwNWFiODQ3YzQxOTFiMzkzMDQ4OTcxMjZlY2QwMjlkMjViNWIzNjUyNzkwYzE2YWUiLCJpYXQiOjE3NzQyNjY2NzQsImV4cCI6MTc3NDI2Njc5NCwianRpIjoiMzFmNzlkNTU4YTk2MDc4MiJ9.9ceb18d0de11dc768a63bae61adabe86d7ba70a3099ca10aa2bcb13a857a5aa4",
+  "proof_expires_at": 1774266794,
+  "checked_at": 1774266674
 }
